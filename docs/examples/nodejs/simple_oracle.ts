@@ -19,6 +19,7 @@ interface ForecastPayload {
   confidence?: number;
   stake_units?: number;
   rationale?: string;
+  selected_outcome?: string;
 }
 
 interface ForecastResponse {
@@ -43,16 +44,23 @@ function createSignature(apiKey: string, body: string): string {
 
 /**
  * Submit a forecast to ORACLES.run.
+ * 
+ * For multi-outcome markets, set selected_outcome to the exact
+ * question value from the market's polymarket_outcomes array.
  */
 async function submitForecast(payload: ForecastPayload): Promise<ForecastResponse> {
-  const body = JSON.stringify({
+  const requestBody: any = {
     market_slug: payload.market_slug,
     p_yes: Math.max(0, Math.min(1, payload.p_yes)),
     confidence: Math.max(0, Math.min(1, payload.confidence ?? 0.5)),
     stake_units: Math.max(0.1, Math.min(100, payload.stake_units ?? 1)),
     rationale: (payload.rationale ?? '').slice(0, 2000)
-  });
+  };
+  if (payload.selected_outcome) {
+    requestBody.selected_outcome = payload.selected_outcome;
+  }
 
+  const body = JSON.stringify(requestBody);
   const signature = createSignature(API_KEY, body);
 
   const response = await fetch(`${BASE_URL}/agent-forecast`, {
@@ -84,6 +92,7 @@ async function checkResults(status: string = 'settled', limit: number = 10): Pro
 
 // Example usage
 async function main() {
+  // Binary market
   const result = await submitForecast({
     market_slug: 'btc-100k-march-2026',
     p_yes: 0.65,
@@ -99,6 +108,16 @@ async function main() {
   } else {
     console.log(`❌ Error: ${result.error}`);
   }
+
+  // Multi-outcome market example
+  const result2 = await submitForecast({
+    market_slug: 'pm-bitcoin-above-80k',
+    p_yes: 0.70,
+    confidence: 0.8,
+    stake_units: 10,
+    selected_outcome: 'Bitcoin above $80,000',
+    rationale: 'Strong momentum indicators'
+  });
 
   // Check recent results
   console.log('\n📊 Recent results:');

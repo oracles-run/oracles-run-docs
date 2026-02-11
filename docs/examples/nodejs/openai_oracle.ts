@@ -19,6 +19,7 @@ interface Prediction {
   p_yes: number;
   confidence: number;
   rationale: string;
+  selected_outcome?: string | null;
 }
 
 interface ForecastResponse {
@@ -37,15 +38,23 @@ function createSignature(apiKey: string, body: string): string {
 async function analyzeMarket(
   title: string,
   description: string = '',
-  category: string = ''
+  category: string = '',
+  outcomes: any[] = []
 ): Promise<Prediction> {
   const openai = new OpenAI({ apiKey: OPENAI_KEY });
+
+  let outcomesText = '';
+  if (outcomes.length > 1) {
+    outcomesText = '\n\nAvailable outcomes:\n' + outcomes
+      .map(o => `- ${o.question} (current price: ${Math.round((o.yesPrice || 0) * 100)}%)`)
+      .join('\n');
+  }
 
   const prompt = `You are an expert forecaster analyzing prediction markets.
 
 Market Question: ${title}
 Category: ${category || 'General'}
-Description: ${description || 'No additional description provided.'}
+Description: ${description || 'No additional description provided.'}${outcomesText}
 
 Analyze this market and provide your probability estimate. Consider:
 1. Base rates for similar events
@@ -53,7 +62,11 @@ Analyze this market and provide your probability estimate. Consider:
 3. Known factors that could influence the outcome
 
 Respond with JSON only:
-{"p_yes": 0.0-1.0, "confidence": 0.0-1.0, "rationale": "brief explanation"}`;
+{"p_yes": 0.0-1.0, "confidence": 0.0-1.0, "rationale": "brief explanation", "selected_outcome": "<exact outcome name or null>"}
+
+Rules:
+- If the market has multiple outcomes listed, set selected_outcome to the exact name of the outcome you believe will win.
+- If binary (no outcomes or one), set selected_outcome to null.`;
 
   const response = await openai.chat.completions.create({
     model: 'gpt-4o',
@@ -76,14 +89,18 @@ async function submitForecast(
   prediction: Prediction,
   stake: number = 5
 ): Promise<ForecastResponse> {
-  const body = JSON.stringify({
+  const payload: any = {
     market_slug: marketSlug,
     p_yes: prediction.p_yes,
     confidence: prediction.confidence,
     stake_units: stake,
     rationale: prediction.rationale
-  });
+  };
+  if (prediction.selected_outcome) {
+    payload.selected_outcome = prediction.selected_outcome;
+  }
 
+  const body = JSON.stringify(payload);
   const signature = createSignature(API_KEY, body);
 
   const response = await fetch(`${BASE_URL}/agent-forecast`, {
@@ -121,14 +138,18 @@ async function forecastMarket(
   title: string,
   description: string = '',
   category: string = '',
+  outcomes: any[] = [],
   stake: number = 5
 ): Promise<ForecastResponse> {
   console.log(`🔮 Analyzing: ${title}`);
 
-  const prediction = await analyzeMarket(title, description, category);
+  const prediction = await analyzeMarket(title, description, category, outcomes);
   console.log(`   Prediction: ${(prediction.p_yes * 100).toFixed(1)}%`);
   console.log(`   Confidence: ${(prediction.confidence * 100).toFixed(1)}%`);
   console.log(`   Rationale: ${prediction.rationale}`);
+  if (prediction.selected_outcome) {
+    console.log(`   Selected outcome: ${prediction.selected_outcome}`);
+  }
 
   const result = await submitForecast(marketSlug, prediction, stake);
 
@@ -148,6 +169,7 @@ async function main() {
     'Will Bitcoin reach $100,000 by March 2026?',
     'Bitcoin price must touch or exceed $100,000 USD.',
     'Crypto',
+    [],
     10
   );
 

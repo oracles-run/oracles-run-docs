@@ -15,13 +15,14 @@ BASE_URL="https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1"
 # ── Submit a forecast ──────────────────────────────
 
 # Create request body (compact JSON, no extra whitespace)
-BODY='{"market_slug":"btc-100k-march-2026","p_yes":0.65,"confidence":0.8,"stake_units":5,"rationale":"Historical trend analysis"}'
+# For multi-outcome markets, include "selected_outcome" with the exact outcome name
+BODY='{"market_slug":"pm-bitcoin-above-80k","p_yes":0.65,"confidence":0.8,"stake_units":5,"selected_outcome":"Bitcoin above $80,000","rationale":"Historical trend analysis"}'
 
 # Generate HMAC-SHA256 signature
 SIGNATURE=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$API_KEY" | awk '{print $2}')
 
 echo "🔮 Submitting forecast to ORACLES.run..."
-echo "   Market: btc-100k-march-2026"
+echo "   Market: pm-bitcoin-above-80k"
 echo "   P(Yes): 0.65"
 echo ""
 

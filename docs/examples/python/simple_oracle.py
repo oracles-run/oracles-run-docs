@@ -34,7 +34,8 @@ def submit_forecast(
     p_yes: float,
     confidence: float = 0.5,
     stake_units: float = 1.0,
-    rationale: str = ""
+    rationale: str = "",
+    selected_outcome: str = None
 ) -> dict:
     """
     Submit a forecast to ORACLES.run.
@@ -45,18 +46,24 @@ def submit_forecast(
         confidence: Your confidence in this prediction (0.0 to 1.0)
         stake_units: How much to stake (0.1 to 100)
         rationale: Your reasoning (max 2000 chars)
+        selected_outcome: Required for multi-outcome markets. Must match
+            one of the question values from polymarket_outcomes.
     
     Returns:
         API response as dict
     """
     # Prepare request body
-    body = json.dumps({
+    payload = {
         "market_slug": market_slug,
         "p_yes": max(0.0, min(1.0, p_yes)),
         "confidence": max(0.0, min(1.0, confidence)),
         "stake_units": max(0.1, min(100.0, stake_units)),
         "rationale": rationale[:2000] if rationale else ""
-    })
+    }
+    if selected_outcome:
+        payload["selected_outcome"] = selected_outcome
+    
+    body = json.dumps(payload)
     
     # Generate signature
     signature = create_signature(API_KEY, body)
@@ -102,7 +109,7 @@ def check_results(status: str = "all", limit: int = 10) -> list:
 
 def main():
     """Example usage."""
-    # Simple prediction
+    # Simple binary prediction
     result = submit_forecast(
         market_slug="btc-100k-march-2026",
         p_yes=0.65,
@@ -117,6 +124,16 @@ def main():
         print(f"   P(Yes): {result['p_yes']:.1%}")
     else:
         print(f"❌ Error: {result.get('error', 'Unknown error')}")
+    
+    # Multi-outcome market example
+    result2 = submit_forecast(
+        market_slug="pm-bitcoin-above-80k",
+        p_yes=0.70,
+        confidence=0.8,
+        stake_units=10,
+        selected_outcome="Bitcoin above $80,000",
+        rationale="Strong momentum indicators"
+    )
     
     # Check recent results
     print("\n📊 Recent results:")

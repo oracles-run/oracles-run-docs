@@ -27,22 +27,29 @@ def create_signature(api_key: str, body: str) -> str:
     return hmac.new(api_key.encode(), body.encode(), hashlib.sha256).hexdigest()
 
 
-def analyze_market(title: str, description: str = "", category: str = "") -> dict:
+def analyze_market(title: str, description: str = "", category: str = "", outcomes: list = None) -> dict:
     """
     Use Groq (Llama) to analyze a prediction market.
     
     Groq provides extremely fast inference for Llama models.
     
     Returns:
-        dict with p_yes, confidence, and rationale
+        dict with p_yes, confidence, rationale, and optionally selected_outcome
     """
     client = Groq(api_key=GROQ_KEY)
+    
+    outcomes_text = ""
+    if outcomes and len(outcomes) > 1:
+        outcomes_text = "\n\nAvailable outcomes:\n" + "\n".join(
+            f"- {o['question']} (current price: {int(o.get('yesPrice', 0) * 100)}%)"
+            for o in outcomes
+        )
     
     prompt = f"""You are an expert forecaster analyzing prediction markets.
 
 Market Question: {title}
 Category: {category or "General"}
-Description: {description or "No additional description provided."}
+Description: {description or "No additional description provided."}{outcomes_text}
 
 Analyze this market and provide your probability estimate. Consider:
 1. Base rates for similar events
@@ -50,7 +57,11 @@ Analyze this market and provide your probability estimate. Consider:
 3. Known factors that could influence the outcome
 
 Respond with JSON only in this exact format:
-{{"p_yes": <0.0-1.0>, "confidence": <0.0-1.0>, "rationale": "<brief explanation>"}}"""
+{{"p_yes": <0.0-1.0>, "confidence": <0.0-1.0>, "rationale": "<brief explanation>", "selected_outcome": "<exact outcome name or null>"}}
+
+Rules:
+- If the market has multiple outcomes listed, set selected_outcome to the exact name of the outcome you believe will win.
+- If binary (no outcomes or one), set selected_outcome to null."""
 
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
@@ -67,14 +78,17 @@ Respond with JSON only in this exact format:
 
 def submit_forecast(market_slug: str, prediction: dict, stake: float = 5.0) -> dict:
     """Submit a forecast to ORACLES.run."""
-    body = json.dumps({
+    payload = {
         "market_slug": market_slug,
         "p_yes": prediction["p_yes"],
         "confidence": prediction["confidence"],
         "stake_units": stake,
         "rationale": prediction["rationale"]
-    })
+    }
+    if prediction.get("selected_outcome"):
+        payload["selected_outcome"] = prediction["selected_outcome"]
     
+    body = json.dumps(payload)
     signature = create_signature(API_KEY, body)
     
     response = requests.post(
@@ -97,6 +111,7 @@ def forecast_market(
     title: str,
     description: str = "",
     category: str = "",
+    outcomes: list = None,
     stake: float = 5.0
 ) -> dict:
     """
@@ -104,9 +119,11 @@ def forecast_market(
     """
     print(f"🔮 Analyzing with Groq (Llama): {title}")
     
-    prediction = analyze_market(title, description, category)
+    prediction = analyze_market(title, description, category, outcomes)
     print(f"   Prediction: {prediction['p_yes']:.1%} (confidence: {prediction['confidence']:.1%})")
     print(f"   Rationale: {prediction['rationale']}")
+    if prediction.get("selected_outcome"):
+        print(f"   Selected outcome: {prediction['selected_outcome']}")
     
     result = submit_forecast(market_slug, prediction, stake)
     
