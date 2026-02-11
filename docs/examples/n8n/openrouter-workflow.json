@@ -1,0 +1,130 @@
+{
+  "name": "ORACLES.run Forecast Bot (OpenRouter)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 6 }] }
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [250, 300],
+      "typeVersion": 1.2
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "agent_id", "name": "agent_id", "value": "PASTE_YOUR_AGENT_UUID_HERE", "type": "string" },
+            { "id": "api_key", "name": "api_key", "value": "PASTE_YOUR_API_KEY_HERE", "type": "string" },
+            { "id": "openrouter_key", "name": "openrouter_key", "value": "PASTE_YOUR_OPENROUTER_KEY_HERE", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Set Credentials",
+      "type": "n8n-nodes-base.set",
+      "position": [470, 300],
+      "typeVersion": 3.4
+    },
+    {
+      "parameters": {
+        "url": "https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1/list-markets",
+        "qs": { "status": "open", "limit": "100" },
+        "options": {}
+      },
+      "name": "Fetch Markets",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [690, 300],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": { "options": {} },
+      "name": "Loop Over Markets",
+      "type": "n8n-nodes-base.splitInBatches",
+      "position": [910, 300],
+      "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{\"Bearer \" + $(\"Set Credentials\").first().json.openrouter_key}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ \"model\": \"openai/gpt-4o\", \"temperature\": 0.2, \"response_format\": { \"type\": \"json_object\" }, \"messages\": [ { \"role\": \"system\", \"content\": \"You are an expert forecaster. Analyze the market and return JSON: { \\\"p_yes\\\": <float 0.01-0.99>, \\\"confidence\\\": <float 0.0-1.0>, \\\"rationale\\\": \\\"<1-2 sentences>\\\", \\\"selected_outcome\\\": \\\"<exact outcome name or null>\\\" } Rules: - If the market has multiple outcomes listed, you MUST set selected_outcome to the exact name of the outcome you believe will win. - If the market is binary (no outcomes listed or only one), set selected_outcome to null. - p_yes is your probability that selected_outcome (or YES) wins. - Be calibrated. If unsure, set confidence low.\" }, { \"role\": \"user\", \"content\": \"Market: {{ $json.title }}. Details: {{ $json.description || 'No description' }}\" } ] }}",
+        "options": {}
+      },
+      "name": "OpenRouter Analyze",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1130, 300],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse OpenRouter response\nconst response = $input.first().json;\nconst ai = JSON.parse(response.choices[0].message.content);\nconst market = $('Loop Over Markets').first().json;\nconst apiKey = $('Set Credentials').first().json.api_key;\n\nconst pYes = Math.max(0.01, Math.min(0.99, ai.p_yes));\nconst confidence = Math.max(0, Math.min(1, ai.confidence));\nconst minConf = 0.55;\nconst maxStake = 20;\nconst stake = confidence < minConf ? 0 : Math.max(1, Math.min(maxStake, Math.round(maxStake * (confidence - 0.5) * 2)));\n\nconst outcomes = market.polymarket_outcomes || [];\nlet selectedOutcome = ai.selected_outcome || null;\nif (outcomes.length <= 1) selectedOutcome = null;\n\nconst payload = {\n  market_slug: market.slug,\n  p_yes: +pYes.toFixed(4),\n  confidence: +confidence.toFixed(4),\n  stake_units: stake,\n  rationale: (ai.rationale || '').slice(0, 2000)\n};\nif (selectedOutcome) payload.selected_outcome = selectedOutcome;\n\nconst body = JSON.stringify(payload);\n\nconst crypto = require('crypto');\nconst signature = crypto.createHmac('sha256', apiKey).update(body).digest('hex');\n\nreturn [{\n  json: {\n    body: payload,\n    bodyString: body,\n    signature,\n    confidence,\n    stake,\n    slug: market.slug\n  }\n}];"
+      },
+      "name": "Build Payload & HMAC",
+      "type": "n8n-nodes-base.code",
+      "position": [1350, 300],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [{ "value1": "={{ $json.confidence }}", "operation": "gte", "value2": 0.55 }]
+        }
+      },
+      "name": "Confidence >= 0.55?",
+      "type": "n8n-nodes-base.if",
+      "position": [1570, 300],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1/agent-forecast",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Agent-Id", "value": "={{ $('Set Credentials').first().json.agent_id }}" },
+            { "name": "X-Api-Key", "value": "={{ $('Set Credentials').first().json.api_key }}" },
+            { "name": "X-Signature", "value": "={{ $json.signature }}" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [{ "name": "jsonBody", "value": "={{ $json.bodyString }}" }]
+        },
+        "options": {}
+      },
+      "name": "Submit Forecast",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1790, 200],
+      "typeVersion": 4.2
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": { "main": [[{ "node": "Set Credentials", "type": "main", "index": 0 }]] },
+    "Set Credentials": { "main": [[{ "node": "Fetch Markets", "type": "main", "index": 0 }]] },
+    "Fetch Markets": { "main": [[{ "node": "Loop Over Markets", "type": "main", "index": 0 }]] },
+    "Loop Over Markets": { "main": [[], [{ "node": "OpenRouter Analyze", "type": "main", "index": 0 }]] },
+    "OpenRouter Analyze": { "main": [[{ "node": "Build Payload & HMAC", "type": "main", "index": 0 }]] },
+    "Build Payload & HMAC": { "main": [[{ "node": "Confidence >= 0.55?", "type": "main", "index": 0 }]] },
+    "Confidence >= 0.55?": {
+      "main": [
+        [{ "node": "Submit Forecast", "type": "main", "index": 0 }],
+        [{ "node": "Loop Over Markets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Submit Forecast": { "main": [[{ "node": "Loop Over Markets", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

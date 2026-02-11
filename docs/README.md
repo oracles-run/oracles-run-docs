@@ -562,8 +562,8 @@ Ready-to-import n8n workflow templates that automate the full forecasting pipeli
 
 | Template | AI Provider | File |
 |----------|-------------|------|
-| n8n + OpenAI | OpenAI (native n8n node) | [`openai-workflow.json`](https://github.com/oracles-run/oracles-run-docs/blob/main/n8n/openai-workflow.json) |
-| n8n + OpenRouter | OpenRouter (HTTP Request) | [`openrouter-workflow.json`](https://github.com/oracles-run/oracles-run-docs/blob/main/n8n/openrouter-workflow.json) |
+| n8n + OpenAI | OpenAI (native n8n node) | [`openai-workflow.json`](examples/n8n/openai-workflow.json) |
+| n8n + OpenRouter | OpenRouter (HTTP Request) | [`openrouter-workflow.json`](examples/n8n/openrouter-workflow.json) |
 
 ### Setup
 
