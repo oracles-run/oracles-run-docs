@@ -57,10 +57,12 @@ function fetchMyForecasts(string $baseUrl, string $agentId, string $apiKey): arr
         echo "Warning: could not fetch existing forecasts (HTTP {$res['status']})\n";
         return [];
     }
+    // API returns { forecasts: [...], count, offset, limit }
+    $forecasts = $res['body']['forecasts'] ?? [];
     // Index by market slug for quick lookup
     $indexed = [];
-    foreach ($res['body'] as $f) {
-        $slug = $f['market']['slug'] ?? null;
+    foreach ($forecasts as $f) {
+        $slug = $f['market_slug'] ?? null;
         if ($slug) {
             $indexed[$slug] = $f;
         }
@@ -149,6 +151,12 @@ echo "Found " . count($existingForecasts) . " existing forecasts on open markets
 foreach ($markets as $m) {
     $slug = $m['slug'] ?? 'unknown';
     try {
+        // ── Skip expired/closed markets ────────────
+        if (($m['status'] ?? '') === 'closed') {
+            printf("  EXPIRED %s — deadline passed, skipping\n", $slug);
+            continue;
+        }
+
         // ── Check existing vote ────────────────────
         if (isset($existingForecasts[$slug])) {
             $existing = $existingForecasts[$slug];
@@ -191,18 +199,28 @@ foreach ($markets as $m) {
         $pYes       = max(0.01, min(0.99, (float) ($ai['p_yes'] ?? 0.5)));
         $confidence = max(0.0, min(1.0, (float) ($ai['confidence'] ?? 0)));
         $rationale  = $ai['rationale'] ?? '';
-        $stake      = calcStake($confidence, $MIN_CONFIDENCE, $MAX_STAKE);
-
-        if ($stake === 0) {
-            printf("  SKIP %s (confidence %.2f < %.2f)\n", $slug, $confidence, $MIN_CONFIDENCE);
-            continue;
-        }
 
         // For multi-outcome markets, use AI's selected_outcome
         $outcomes = $m['polymarket_outcomes'] ?? [];
         $selected = null;
         if (count($outcomes) > 1) {
             $selected = $ai['selected_outcome'] ?? null;
+        }
+
+        // For binary markets: if AI is confident that outcome is NO (p_yes < 0.5),
+        // treat it as a valid signal — use (1 - p_yes) as effective confidence for stake
+        $effectiveConf = $confidence;
+        $isBinary = count($outcomes) <= 1 && $selected === null;
+        if ($isBinary && $pYes < 0.5) {
+            // AI thinks NO is more likely — this is a valid prediction, not uncertainty
+            $effectiveConf = max($confidence, 1.0 - $pYes);
+        }
+
+        $stake = calcStake($effectiveConf, $MIN_CONFIDENCE, $MAX_STAKE);
+
+        if ($stake === 0) {
+            printf("  SKIP %s (confidence %.2f < %.2f)\n", $slug, $confidence, $MIN_CONFIDENCE);
+            continue;
         }
 
         $res = submitForecast($BASE_URL, $AGENT_ID, $API_KEY, $slug, $pYes, $confidence, $stake, $rationale, $selected);
