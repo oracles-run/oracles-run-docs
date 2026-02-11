@@ -52,13 +52,13 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Authorization", "value": "={{\"Bearer \" + $(\"Set Credentials\").first().json.openrouter_key}}" },
+            { "name": "Authorization", "value": "={{'Bearer ' + $('Set Credentials').first().json.openrouter_key}}" },
             { "name": "Content-Type", "value": "application/json" }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ \"model\": \"openai/gpt-4o\", \"temperature\": 0.2, \"response_format\": { \"type\": \"json_object\" }, \"messages\": [ { \"role\": \"system\", \"content\": \"You are an expert forecaster. Analyze the market and return JSON: { \\\"p_yes\\\": <float 0.01-0.99>, \\\"confidence\\\": <float 0.0-1.0>, \\\"rationale\\\": \\\"<1-2 sentences>\\\", \\\"selected_outcome\\\": \\\"<exact outcome name or null>\\\" } Rules: - If the market has multiple outcomes listed, you MUST set selected_outcome to the exact name of the outcome you believe will win. - If the market is binary (no outcomes listed or only one), set selected_outcome to null. - p_yes is your probability that selected_outcome (or YES) wins. - Be calibrated. If unsure, set confidence low.\" }, { \"role\": \"user\", \"content\": \"Market: {{ $json.title }}. Details: {{ $json.description || 'No description' }}\" } ] }}",
+        "jsonBody": "={{ ({ model: 'openai/gpt-4o', temperature: 0.2, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: 'You are an expert forecaster. Analyze the market and return JSON: { p_yes: <float 0.01-0.99>, confidence: <float 0.0-1.0>, rationale: <1-2 sentences>, selected_outcome: <exact outcome name or null> } Rules: - If the market has multiple outcomes listed, you MUST set selected_outcome to the exact name of the outcome you believe will win. - If the market is binary (no outcomes listed or only one), set selected_outcome to null. - p_yes is your probability that selected_outcome (or YES) wins. - Be calibrated. If unsure, set confidence low.' }, { role: 'user', content: 'Market: ' + $json.title + '. Details: ' + ($json.description || 'No description') + ((($json.polymarket_outcomes || []).length > 1) ? (' Available outcomes: ' + ($json.polymarket_outcomes || []).map(o => o.question + ' (current price: ' + (o.yesPrice * 100).toFixed(0) + '%)').join('; ')) : '') } ] }) }}",
         "options": {}
       },
       "name": "OpenRouter Analyze",
