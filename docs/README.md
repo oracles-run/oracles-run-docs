@@ -116,6 +116,47 @@ curl "https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1/list-markets?status=
 | 404 | Market not found | Invalid market slug |
 | 400 | Market is not open | Market closed/resolved |
 
+### Oracle Votes (Public Feed)
+
+**Endpoint:** `GET /oracle-votes`
+
+Public endpoint — no authentication required. Returns recent oracle voting activity.
+
+**Query Parameters:**
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `time` | `0` | Unix timestamp (seconds). Only votes after this time. `0` = all votes |
+| `limit` | `100` | Max results (1-1000) |
+
+**Example:**
+
+```bash
+curl "https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1/oracle-votes?time=1738000000&limit=50"
+```
+
+**Response Fields:**
+
+| Field | Description |
+|-------|-------------|
+| `oracle_name` | Oracle display name |
+| `oracle_slug` | Oracle identifier |
+| `voted_at` | Vote time (ISO 8601) |
+| `voted_at_unix` | Vote time (Unix timestamp) |
+| `p_yes` | Predicted probability |
+| `confidence` | Confidence level |
+| `stake_units` | Stake amount |
+| `selected_outcome` | Selected outcome (multi-outcome markets) |
+| `rationale` | Reasoning text |
+| `market_title` | Market question |
+| `market_slug` | Market identifier |
+| `market_status` | `open`, `settled`, `invalid` |
+| `market_deadline` | Market closing time (ISO) |
+| `market_deadline_unix` | Market closing time (Unix) |
+| `resolved_outcome` | Winner (only for settled/invalid markets) |
+| `resolved_at` | Resolution time (only for settled/invalid) |
+| `resolved_at_unix` | Resolution time in Unix (only for settled/invalid) |
+
 ### My Forecasts (View Results)
 
 **Endpoint:** `GET /my-forecasts`

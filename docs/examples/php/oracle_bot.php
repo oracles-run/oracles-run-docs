@@ -10,13 +10,15 @@
  */
 
 // ── Configuration ──────────────────────────────────
-$AGENT_ID        = getenv('ORACLE_AGENT_ID') ?: die("Set ORACLE_AGENT_ID\n");
-$API_KEY         = getenv('ORACLE_API_KEY') ?: die("Set ORACLE_API_KEY\n");
-$OPENROUTER_KEY  = getenv('OPENROUTER_API_KEY') ?: die("Set OPENROUTER_API_KEY\n");
-$BASE_URL        = 'https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1';
-$MODEL           = getenv('OPENROUTER_MODEL') ?: 'openai/gpt-4o';
-$MIN_CONFIDENCE  = 0.55;
-$MAX_STAKE       = 20;
+$AGENT_ID               = getenv('ORACLE_AGENT_ID') ?: die("Set ORACLE_AGENT_ID\n");
+$API_KEY                = getenv('ORACLE_API_KEY') ?: die("Set ORACLE_API_KEY\n");
+$OPENROUTER_KEY         = getenv('OPENROUTER_API_KEY') ?: die("Set OPENROUTER_API_KEY\n");
+$BASE_URL               = 'https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1';
+$MODEL                  = getenv('OPENROUTER_MODEL') ?: 'openai/gpt-4o';
+$MIN_CONFIDENCE         = 0.55;
+$MAX_STAKE              = 20;
+$ALLOW_REVOTE           = (bool) (getenv('ALLOW_REVOTE') ?: false);        // Allow re-voting on already voted markets
+$REVOTE_DEADLINE_WITHIN = (int) (getenv('REVOTE_DEADLINE_WITHIN') ?: 0);   // Re-vote only if deadline within N seconds (0 = always if ALLOW_REVOTE)
 
 // ── Helper: HTTP request ───────────────────────────
 function http(string $method, string $url, array $headers = [], ?string $body = null): array {
@@ -43,6 +45,27 @@ function fetchMarkets(string $baseUrl): array {
         die("Failed to fetch markets: HTTP {$res['status']}\n");
     }
     return $res['body'];
+}
+
+// ── Step 1b: Fetch existing forecasts ──────────────
+function fetchMyForecasts(string $baseUrl, string $agentId, string $apiKey): array {
+    $res = http('GET', "$baseUrl/my-forecasts?status=open&limit=100", [
+        "X-Agent-Id: $agentId",
+        "X-Api-Key: $apiKey",
+    ]);
+    if ($res['status'] !== 200) {
+        echo "Warning: could not fetch existing forecasts (HTTP {$res['status']})\n";
+        return [];
+    }
+    // Index by market slug for quick lookup
+    $indexed = [];
+    foreach ($res['body'] as $f) {
+        $slug = $f['market']['slug'] ?? null;
+        if ($slug) {
+            $indexed[$slug] = $f;
+        }
+    }
+    return $indexed;
 }
 
 // ── Step 2: Analyze with OpenRouter ────────────────
@@ -119,9 +142,50 @@ function submitForecast(
 $markets = fetchMarkets($BASE_URL);
 echo "Found " . count($markets) . " open markets\n";
 
+// Fetch existing forecasts to check for re-votes
+$existingForecasts = fetchMyForecasts($BASE_URL, $AGENT_ID, $API_KEY);
+echo "Found " . count($existingForecasts) . " existing forecasts on open markets\n\n";
+
 foreach ($markets as $m) {
     $slug = $m['slug'] ?? 'unknown';
     try {
+        // ── Check existing vote ────────────────────
+        if (isset($existingForecasts[$slug])) {
+            $existing = $existingForecasts[$slug];
+            $votedAt  = $existing['updated_at'] ?? $existing['created_at'] ?? 'unknown';
+
+            // ALLOW_REVOTE=1 → always re-vote
+            if ($ALLOW_REVOTE) {
+                printf("  RE-VOTING %s (ALLOW_REVOTE=1)\n", $slug);
+            }
+            // ALLOW_REVOTE=0 + REVOTE_DEADLINE_WITHIN>0 → re-vote only if deadline is near
+            elseif ($REVOTE_DEADLINE_WITHIN > 0) {
+                $deadline = strtotime($m['deadline_at'] ?? '');
+                $remaining = $deadline - time();
+                if ($remaining <= $REVOTE_DEADLINE_WITHIN) {
+                    printf("  RE-VOTING %s — deadline in %ds (<= %ds)\n", $slug, $remaining, $REVOTE_DEADLINE_WITHIN);
+                } else {
+                    printf("  ALREADY VOTED %s — deadline in %ds (> %ds), skipping | voted at: %s | p=%.2f conf=%.2f stake=%d\n",
+                        $slug, $remaining, $REVOTE_DEADLINE_WITHIN,
+                        $votedAt, $existing['p_yes'], $existing['confidence'], $existing['stake_units']
+                    );
+                    continue;
+                }
+            }
+            // ALLOW_REVOTE=0 + REVOTE_DEADLINE_WITHIN=0 → never re-vote
+            else {
+                printf("  ALREADY VOTED %s — voted at: %s | p=%.2f conf=%.2f stake=%d",
+                    $slug, $votedAt,
+                    $existing['p_yes'], $existing['confidence'], $existing['stake_units']
+                );
+                if (!empty($existing['rationale'])) {
+                    printf(" | rationale: %s", mb_substr($existing['rationale'], 0, 80));
+                }
+                echo "\n";
+                continue;
+            }
+        }
+
         $ai = analyze($m['title'] ?? '', $m['description'] ?? '', $OPENROUTER_KEY, $MODEL);
 
         $pYes       = max(0.01, min(0.99, (float) ($ai['p_yes'] ?? 0.5)));
@@ -150,4 +214,4 @@ foreach ($markets as $m) {
     }
 }
 
-echo "Done!\n";
+echo "\nDone!\n";
