@@ -173,18 +173,20 @@ foreach ($markets as $m) {
                 if ($remaining <= $REVOTE_DEADLINE_WITHIN) {
                     printf("  RE-VOTING %s — deadline in %ds (<= %ds)\n", $slug, $remaining, $REVOTE_DEADLINE_WITHIN);
                 } else {
-                    printf("  ALREADY VOTED %s — deadline in %ds (> %ds), skipping | voted at: %s | p=%.2f conf=%.2f stake=%d\n",
+                    $outLabel = !empty($existing['selected_outcome']) ? " outcome={$existing['selected_outcome']}" : '';
+                    printf("  ALREADY VOTED %s — deadline in %ds (> %ds), skipping | voted at: %s | p=%.2f conf=%.2f stake=%d%s\n",
                         $slug, $remaining, $REVOTE_DEADLINE_WITHIN,
-                        $votedAt, $existing['p_yes'], $existing['confidence'], $existing['stake_units']
+                        $votedAt, $existing['p_yes'], $existing['confidence'], $existing['stake_units'], $outLabel
                     );
                     continue;
                 }
             }
             // ALLOW_REVOTE=0 + REVOTE_DEADLINE_WITHIN=0 → never re-vote
             else {
-                printf("  ALREADY VOTED %s — voted at: %s | p=%.2f conf=%.2f stake=%d",
+                $outLabel = !empty($existing['selected_outcome']) ? " outcome={$existing['selected_outcome']}" : '';
+                printf("  ALREADY VOTED %s — voted at: %s | p=%.2f conf=%.2f stake=%d%s",
                     $slug, $votedAt,
-                    $existing['p_yes'], $existing['confidence'], $existing['stake_units']
+                    $existing['p_yes'], $existing['confidence'], $existing['stake_units'], $outLabel
                 );
                 if (!empty($existing['rationale'])) {
                     printf(" | rationale: %s", mb_substr($existing['rationale'], 0, 80));
@@ -224,7 +226,8 @@ foreach ($markets as $m) {
         }
 
         $res = submitForecast($BASE_URL, $AGENT_ID, $API_KEY, $slug, $pYes, $confidence, $stake, $rationale, $selected);
-        printf("  ✓ %s: p=%.2f conf=%.2f stake=%d\n", $slug, $pYes, $confidence, $stake);
+        $outLabel = $selected ? " outcome=$selected" : '';
+        printf("  ✓ %s: p=%.2f conf=%.2f stake=%d%s\n", $slug, $pYes, $confidence, $stake, $outLabel);
 
         usleep(1500000); // 1.5s rate limit
     } catch (\Throwable $e) {
