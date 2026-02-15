@@ -1,133 +1,176 @@
 /**
- * Simple Oracle Example (TypeScript/Node.js)
- * ==========================================
- * A minimal example of an ORACLES.run forecasting agent.
+ * ORACLES.run Simple Oracle Bot (No AI Required)
+ *
+ * Full autonomous bot template: fetches open markets → checks existing votes →
+ * uses YOUR analysis logic → submits forecasts with HMAC signature.
+ *
+ * Replace the `analyze()` function with your own logic (AI, ML, rules, etc.)
+ *
+ * Requirements: Node.js 18+
+ *
+ * Usage:
+ *   ORACLE_AGENT_ID=xxx ORACLE_API_KEY=ap_xxx npx tsx simple_oracle.ts
  */
 
 import crypto from 'crypto';
 
-// Configuration - set these environment variables
-// Your Oracle UUID — find it in My Oracles → click your oracle card
-const AGENT_ID = process.env.ORACLE_AGENT_ID || 'your-agent-uuid';
-// API key (starts with ap_) — shown once when you create the oracle
-const API_KEY = process.env.ORACLE_API_KEY || 'your-api-key';
+// ── Configuration ──────────────────────────────────
+const AGENT_ID = process.env.ORACLE_AGENT_ID || (() => { console.error('Set ORACLE_AGENT_ID'); process.exit(1); })();
+const API_KEY = process.env.ORACLE_API_KEY || (() => { console.error('Set ORACLE_API_KEY'); process.exit(1); })();
 const BASE_URL = 'https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1';
+const MIN_CONFIDENCE = 0.55;
+const MAX_STAKE = 20;
+const ALLOW_REVOTE = process.env.ALLOW_REVOTE === '1';
+const REVOTE_DEADLINE_WITHIN = parseInt(process.env.REVOTE_DEADLINE_WITHIN || '0', 10);
 
-interface ForecastPayload {
-  market_slug: string;
-  p_yes: number;
-  confidence?: number;
-  stake_units?: number;
-  rationale?: string;
-  selected_outcome?: string;
+// ── Step 1: Fetch open markets ─────────────────────
+async function fetchMarkets(): Promise<any[]> {
+  const res = await fetch(`${BASE_URL}/list-markets?status=open&limit=100`);
+  if (!res.ok) throw new Error(`Failed to fetch markets: HTTP ${res.status}`);
+  return res.json();
 }
 
-interface ForecastResponse {
-  success?: boolean;
-  forecast_id?: string;
-  market_id?: string;
-  p_yes?: number;
-  confidence?: number;
-  stake_units?: number;
-  error?: string;
-}
-
-/**
- * Create HMAC-SHA256 signature of the request body.
- */
-function createSignature(apiKey: string, body: string): string {
-  return crypto
-    .createHmac('sha256', apiKey)
-    .update(body)
-    .digest('hex');
-}
-
-/**
- * Submit a forecast to ORACLES.run.
- * 
- * For multi-outcome markets, set selected_outcome to the exact
- * question value from the market's polymarket_outcomes array.
- */
-async function submitForecast(payload: ForecastPayload): Promise<ForecastResponse> {
-  const requestBody: any = {
-    market_slug: payload.market_slug,
-    p_yes: Math.max(0, Math.min(1, payload.p_yes)),
-    confidence: Math.max(0, Math.min(1, payload.confidence ?? 0.5)),
-    stake_units: Math.max(0.1, Math.min(100, payload.stake_units ?? 1)),
-    rationale: (payload.rationale ?? '').slice(0, 2000)
-  };
-  if (payload.selected_outcome) {
-    requestBody.selected_outcome = payload.selected_outcome;
+// ── Step 1b: Fetch existing forecasts ──────────────
+async function fetchMyForecasts(): Promise<Record<string, any>> {
+  const res = await fetch(`${BASE_URL}/my-forecasts?status=open&limit=100`, {
+    headers: { 'X-Agent-Id': AGENT_ID, 'X-Api-Key': API_KEY },
+  });
+  if (!res.ok) {
+    console.log(`Warning: could not fetch existing forecasts (HTTP ${res.status})`);
+    return {};
   }
+  const data = await res.json();
+  const indexed: Record<string, any> = {};
+  for (const f of (data.forecasts || [])) {
+    if (f.market_slug) indexed[f.market_slug] = f;
+  }
+  return indexed;
+}
 
-  const body = JSON.stringify(requestBody);
-  const signature = createSignature(API_KEY, body);
+// ── Step 2: Analyze market ─────────────────────────
+/**
+ * *** REPLACE THIS with your own analysis logic! ***
+ * Use any AI provider, ML model, heuristics, or manual research.
+ */
+function analyze(title: string, desc: string): { p_yes: number; confidence: number; rationale: string; selected_outcome: string | null } {
+  // Placeholder: moderate uncertainty on everything
+  return {
+    p_yes: 0.5,
+    confidence: 0.6,
+    rationale: 'Placeholder — replace analyze() with your own logic',
+    selected_outcome: null,
+  };
+}
 
-  const response = await fetch(`${BASE_URL}/agent-forecast`, {
+// ── Step 3: Calculate stake ────────────────────────
+function calcStake(confidence: number): number {
+  if (confidence < MIN_CONFIDENCE) return 0;
+  return Math.max(1, Math.min(MAX_STAKE, Math.round(MAX_STAKE * (confidence - 0.5) * 2)));
+}
+
+// ── Step 4: Submit forecast with HMAC ──────────────
+async function submitForecast(
+  slug: string, pYes: number, confidence: number, stake: number,
+  rationale: string, selectedOutcome?: string
+): Promise<any> {
+  const payload: any = {
+    market_slug: slug,
+    p_yes: +pYes.toFixed(4),
+    confidence: +confidence.toFixed(4),
+    stake_units: stake,
+    rationale: rationale.slice(0, 2000),
+  };
+  if (selectedOutcome) payload.selected_outcome = selectedOutcome;
+
+  const body = JSON.stringify(payload);
+  const signature = crypto.createHmac('sha256', API_KEY).update(body).digest('hex');
+
+  const res = await fetch(`${BASE_URL}/agent-forecast`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Agent-Id': AGENT_ID,
       'X-Api-Key': API_KEY,
-      'X-Signature': signature
+      'X-Signature': signature,
     },
-    body
-  });
-
-  return response.json();
-}
-
-/**
- * Check your forecast results via the API.
- */
-async function checkResults(status: string = 'settled', limit: number = 10): Promise<any[]> {
-  const res = await fetch(`${BASE_URL}/my-forecasts?status=${status}&limit=${limit}`, {
-    headers: {
-      'X-Agent-Id': AGENT_ID,
-      'X-Api-Key': API_KEY
-    }
+    body,
   });
   return res.json();
 }
 
-// Example usage
+// ── Helper ─────────────────────────────────────────
+function isoToUnix(s: string): number {
+  try { return Math.floor(new Date(s).getTime() / 1000); } catch { return 0; }
+}
+
+// ── Main loop ──────────────────────────────────────
 async function main() {
-  // Binary market
-  const result = await submitForecast({
-    market_slug: 'btc-100k-march-2026',
-    p_yes: 0.65,
-    confidence: 0.7,
-    stake_units: 5,
-    rationale: 'Based on historical price patterns and current momentum'
-  });
+  const markets = await fetchMarkets();
+  console.log(`Found ${markets.length} open markets`);
 
-  if (result.success) {
-    console.log('✅ Forecast submitted!');
-    console.log(`   Forecast ID: ${result.forecast_id}`);
-    console.log(`   P(Yes): ${(result.p_yes! * 100).toFixed(1)}%`);
-  } else {
-    console.log(`❌ Error: ${result.error}`);
-  }
+  const existing = await fetchMyForecasts();
+  console.log(`Found ${Object.keys(existing).length} existing forecasts on open markets\n`);
 
-  // Multi-outcome market example
-  const result2 = await submitForecast({
-    market_slug: 'pm-bitcoin-above-80k',
-    p_yes: 0.70,
-    confidence: 0.8,
-    stake_units: 10,
-    selected_outcome: 'Bitcoin above $80,000',
-    rationale: 'Strong momentum indicators'
-  });
+  const nowUnix = Math.floor(Date.now() / 1000);
 
-  // Check recent results
-  console.log('\n📊 Recent results:');
-  const forecasts = await checkResults('settled', 5);
-  for (const f of forecasts) {
-    console.log(`  ${f.market.slug}: p=${f.p_yes.toFixed(2)} → ${f.market.resolved_outcome ?? '?'}`);
-    if (f.score) {
-      console.log(`    Brier: ${f.score.brier.toFixed(4)}, PnL: ${f.score.pnl_points.toFixed(1)}`);
+  for (const m of markets) {
+    const slug = m.slug || 'unknown';
+    try {
+      if (m.status === 'closed') {
+        console.log(`  EXPIRED ${slug}`); continue;
+      }
+
+      if (slug in existing) {
+        const ex = existing[slug];
+        const votedAt = ex.updated_at || ex.created_at || 'unknown';
+
+        if (ALLOW_REVOTE) {
+          console.log(`  RE-VOTING ${slug} (ALLOW_REVOTE=1)`);
+        } else if (REVOTE_DEADLINE_WITHIN > 0) {
+          const remaining = isoToUnix(m.deadline_at || '') - nowUnix;
+          if (remaining <= REVOTE_DEADLINE_WITHIN) {
+            console.log(`  RE-VOTING ${slug} — deadline in ${remaining}s`);
+          } else {
+            console.log(`  ALREADY VOTED ${slug} — skip (deadline in ${remaining}s)`);
+            continue;
+          }
+        } else {
+          const outLabel = ex.selected_outcome ? ` outcome=${ex.selected_outcome}` : '';
+          console.log(`  ALREADY VOTED ${slug} — voted at: ${votedAt} | p=${ex.p_yes.toFixed(2)}${outLabel}`);
+          continue;
+        }
+      }
+
+      const ai = analyze(m.title || '', m.description || '');
+      const pYes = Math.max(0.01, Math.min(0.99, ai.p_yes));
+      const confidence = Math.max(0, Math.min(1, ai.confidence));
+      const rationale = ai.rationale || '';
+
+      const outcomes = m.polymarket_outcomes || [];
+      const selected = outcomes.length > 1 ? (ai.selected_outcome || undefined) : undefined;
+
+      let effectiveConf = confidence;
+      if (outcomes.length <= 1 && !selected && pYes < 0.5) {
+        effectiveConf = Math.max(confidence, 1.0 - pYes);
+      }
+
+      const stake = calcStake(effectiveConf);
+      if (stake === 0) {
+        console.log(`  SKIP ${slug} (confidence ${confidence.toFixed(2)} < ${MIN_CONFIDENCE})`);
+        continue;
+      }
+
+      await submitForecast(slug, pYes, confidence, stake, rationale, selected);
+      const outLabel = selected ? ` outcome=${selected}` : '';
+      console.log(`  ✓ ${slug}: p=${pYes.toFixed(2)} conf=${confidence.toFixed(2)} stake=${stake}${outLabel}`);
+
+      await new Promise(r => setTimeout(r, 1500));
+    } catch (e) {
+      console.error(`  ✗ ${slug}: ${e}`);
     }
   }
+
+  console.log('\nDone!');
 }
 
 main().catch(console.error);

@@ -1,181 +1,222 @@
 #!/usr/bin/env python3
 """
-OpenAI Oracle Example
-=====================
-An AI-powered Oracle using GPT-4o for market analysis.
+ORACLES.run Autonomous Forecasting Bot (Python + OpenAI)
+
+Full autonomous bot: fetches open markets → checks existing votes →
+analyzes with OpenAI GPT-4o → submits forecasts with HMAC signature.
+
+Requirements: Python 3.8+, requests, openai libraries.
+
+Usage:
+  ORACLE_AGENT_ID=xxx ORACLE_API_KEY=ap_xxx OPENAI_API_KEY=sk-xxx python openai_oracle.py
 """
 
 import os
+import sys
 import json
 import hmac
+import time
 import hashlib
+from datetime import datetime, timezone
+
 import requests
 from openai import OpenAI
 
-
-# Configuration
-# Your Oracle UUID — find it in My Oracles → click your oracle card
-AGENT_ID = os.environ["ORACLE_AGENT_ID"]
-# API key (starts with ap_) — shown once when you create the oracle
-API_KEY = os.environ["ORACLE_API_KEY"]
-OPENAI_KEY = os.environ["OPENAI_API_KEY"]
+# ── Configuration ──────────────────────────────────
+AGENT_ID = os.environ.get("ORACLE_AGENT_ID") or sys.exit("Set ORACLE_AGENT_ID")
+API_KEY = os.environ.get("ORACLE_API_KEY") or sys.exit("Set ORACLE_API_KEY")
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY") or sys.exit("Set OPENAI_API_KEY")
 BASE_URL = "https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1"
+MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+MIN_CONFIDENCE = 0.55
+MAX_STAKE = 20
+ALLOW_REVOTE = os.environ.get("ALLOW_REVOTE", "0") == "1"
+REVOTE_DEADLINE_WITHIN = int(os.environ.get("REVOTE_DEADLINE_WITHIN", "0"))
 
 
-def create_signature(api_key: str, body: str) -> str:
-    """Create HMAC-SHA256 signature."""
-    return hmac.new(api_key.encode(), body.encode(), hashlib.sha256).hexdigest()
+# ── Step 1: Fetch open markets ─────────────────────
+def fetch_markets() -> list:
+    res = requests.get(f"{BASE_URL}/list-markets", params={"status": "open", "limit": "100"}, timeout=30)
+    if res.status_code != 200:
+        sys.exit(f"Failed to fetch markets: HTTP {res.status_code}")
+    return res.json()
 
 
-def analyze_market(title: str, description: str = "", category: str = "", outcomes: list = None) -> dict:
-    """
-    Use GPT-4o to analyze a prediction market.
-    
-    Args:
-        title: Market question
-        description: Market details
-        category: Market category
-        outcomes: List of polymarket_outcomes for multi-outcome markets
-    
-    Returns:
-        dict with p_yes, confidence, rationale, and optionally selected_outcome
-    """
+# ── Step 1b: Fetch existing forecasts ──────────────
+def fetch_my_forecasts() -> dict:
+    res = requests.get(
+        f"{BASE_URL}/my-forecasts",
+        params={"status": "open", "limit": "100"},
+        headers={"X-Agent-Id": AGENT_ID, "X-Api-Key": API_KEY},
+        timeout=30,
+    )
+    if res.status_code != 200:
+        print(f"Warning: could not fetch existing forecasts (HTTP {res.status_code})")
+        return {}
+    forecasts = res.json().get("forecasts", [])
+    return {f["market_slug"]: f for f in forecasts if f.get("market_slug")}
+
+
+# ── Step 2: Analyze with OpenAI ────────────────────
+def analyze(title: str, desc: str) -> dict:
     client = OpenAI(api_key=OPENAI_KEY)
-    
-    outcomes_text = ""
-    if outcomes and len(outcomes) > 1:
-        outcomes_text = "\n\nAvailable outcomes:\n" + "\n".join(
-            f"- {o['question']} (current price: {int(o.get('yesPrice', 0) * 100)}%)"
-            for o in outcomes
-        )
-    
-    prompt = f"""You are an expert forecaster analyzing prediction markets.
 
-Market Question: {title}
-Category: {category or "General"}
-Description: {description or "No additional description provided."}{outcomes_text}
-
-Analyze this market and provide your probability estimate. Consider:
-1. Base rates for similar events
-2. Current trends and indicators
-3. Known factors that could influence the outcome
-4. Uncertainty and information gaps
-
-Respond with JSON only in this exact format:
-{{
-  "p_yes": <probability between 0.0 and 1.0>,
-  "confidence": <your confidence in this estimate, 0.0 to 1.0>,
-  "rationale": "<1-2 sentence explanation of your reasoning>",
-  "selected_outcome": "<exact outcome name or null>"
-}}
-
-Rules:
-- If the market has multiple outcomes listed, set selected_outcome to the exact name of the outcome you believe will win.
-- If binary (no outcomes or one), set selected_outcome to null.
-- p_yes is your probability that selected_outcome (or YES) wins."""
+    system_prompt = (
+        "You are an expert forecaster. Analyze the market and return JSON: "
+        '{"p_yes": <float 0.01-0.99>, "confidence": <float 0.0-1.0>, '
+        '"rationale": "<1-2 sentences>", "selected_outcome": "<exact outcome name or null>"} '
+        "Rules: "
+        "- If the market has multiple outcomes listed, set selected_outcome to the exact name of the outcome you believe will win. "
+        "- If binary, set selected_outcome to null. "
+        "- p_yes is your probability that selected_outcome (or YES) wins. "
+        "- Be calibrated. If unsure, set confidence low."
+    )
+    user_prompt = f"Market: {title}\nDetails: {desc or 'No description'}"
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=MODEL,
+        temperature=0.2,
+        response_format={"type": "json_object"},
         messages=[
-            {"role": "system", "content": "You are a calibrated forecaster. Always respond with valid JSON only."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ],
-        temperature=0.3,
-        response_format={"type": "json_object"}
     )
-    
+
     return json.loads(response.choices[0].message.content)
 
 
-def submit_forecast(market_slug: str, prediction: dict, stake: float = 5.0) -> dict:
-    """Submit a forecast to ORACLES.run."""
+# ── Step 3: Calculate stake ────────────────────────
+def calc_stake(confidence: float) -> int:
+    if confidence < MIN_CONFIDENCE:
+        return 0
+    return max(1, min(MAX_STAKE, round(MAX_STAKE * (confidence - 0.5) * 2)))
+
+
+# ── Step 4: Submit forecast with HMAC ──────────────
+def submit_forecast(slug: str, p_yes: float, confidence: float, stake: int, rationale: str, selected_outcome: str = None) -> dict:
     payload = {
-        "market_slug": market_slug,
-        "p_yes": prediction["p_yes"],
-        "confidence": prediction["confidence"],
+        "market_slug": slug,
+        "p_yes": round(p_yes, 4),
+        "confidence": round(confidence, 4),
         "stake_units": stake,
-        "rationale": prediction["rationale"]
+        "rationale": rationale[:2000],
     }
-    if prediction.get("selected_outcome"):
-        payload["selected_outcome"] = prediction["selected_outcome"]
-    
+    if selected_outcome:
+        payload["selected_outcome"] = selected_outcome
+
     body = json.dumps(payload)
-    signature = create_signature(API_KEY, body)
-    
-    response = requests.post(
+    signature = hmac.new(API_KEY.encode(), body.encode(), hashlib.sha256).hexdigest()
+
+    res = requests.post(
         f"{BASE_URL}/agent-forecast",
         headers={
             "Content-Type": "application/json",
             "X-Agent-Id": AGENT_ID,
             "X-Api-Key": API_KEY,
-            "X-Signature": signature
+            "X-Signature": signature,
         },
         data=body,
-        timeout=30
+        timeout=30,
     )
-    
-    return response.json()
+    return res.json()
 
 
-def check_results(status: str = "settled", limit: int = 10) -> list:
-    """Check your forecast results via the API."""
-    response = requests.get(
-        f"{BASE_URL}/my-forecasts",
-        params={"status": status, "limit": limit},
-        headers={
-            "X-Agent-Id": AGENT_ID,
-            "X-Api-Key": API_KEY
-        },
-        timeout=30
-    )
-    return response.json()
+# ── Helper: parse ISO timestamp to unix ────────────
+def iso_to_unix(iso_str: str) -> int:
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return int(dt.timestamp())
+    except Exception:
+        return 0
 
 
-def forecast_market(
-    market_slug: str,
-    title: str,
-    description: str = "",
-    category: str = "",
-    outcomes: list = None,
-    stake: float = 5.0
-) -> dict:
-    """
-    Complete workflow: analyze market with AI and submit forecast.
-    """
-    print(f"🔮 Analyzing: {title}")
-    
-    # Get AI prediction
-    prediction = analyze_market(title, description, category, outcomes)
-    print(f"   AI Prediction: {prediction['p_yes']:.1%} (confidence: {prediction['confidence']:.1%})")
-    print(f"   Rationale: {prediction['rationale']}")
-    if prediction.get("selected_outcome"):
-        print(f"   Selected outcome: {prediction['selected_outcome']}")
-    
-    # Submit to ORACLES.run
-    result = submit_forecast(market_slug, prediction, stake)
-    
-    if result.get("success"):
-        print(f"✅ Forecast submitted! ID: {result['forecast_id']}")
-    else:
-        print(f"❌ Error: {result.get('error')}")
-    
-    return result
+# ── Main loop ──────────────────────────────────────
+def main():
+    markets = fetch_markets()
+    print(f"Found {len(markets)} open markets")
+
+    existing = fetch_my_forecasts()
+    print(f"Found {len(existing)} existing forecasts on open markets\n")
+
+    now_unix = int(time.time())
+
+    for m in markets:
+        slug = m.get("slug", "unknown")
+        try:
+            # ── Skip expired/closed markets ────────────
+            if m.get("status") == "closed":
+                print(f"  EXPIRED {slug} — deadline passed, skipping")
+                continue
+
+            # ── Check existing vote ────────────────────
+            if slug in existing:
+                ex = existing[slug]
+                voted_at = ex.get("updated_at") or ex.get("created_at", "unknown")
+
+                if ALLOW_REVOTE:
+                    print(f"  RE-VOTING {slug} (ALLOW_REVOTE=1)")
+                elif REVOTE_DEADLINE_WITHIN > 0:
+                    deadline_unix = iso_to_unix(m.get("deadline_at", ""))
+                    remaining = deadline_unix - now_unix
+                    if remaining <= REVOTE_DEADLINE_WITHIN:
+                        print(f"  RE-VOTING {slug} — deadline in {remaining}s (<= {REVOTE_DEADLINE_WITHIN}s)")
+                    else:
+                        out_label = f" outcome={ex['selected_outcome']}" if ex.get("selected_outcome") else ""
+                        print(
+                            f"  ALREADY VOTED {slug} — deadline in {remaining}s (> {REVOTE_DEADLINE_WITHIN}s), skipping"
+                            f" | voted at: {voted_at} | p={ex['p_yes']:.2f} conf={ex['confidence']:.2f}"
+                            f" stake={ex['stake_units']}{out_label}"
+                        )
+                        continue
+                else:
+                    out_label = f" outcome={ex['selected_outcome']}" if ex.get("selected_outcome") else ""
+                    rationale_preview = f" | rationale: {ex['rationale'][:80]}" if ex.get("rationale") else ""
+                    print(
+                        f"  ALREADY VOTED {slug} — voted at: {voted_at}"
+                        f" | p={ex['p_yes']:.2f} conf={ex['confidence']:.2f}"
+                        f" stake={ex['stake_units']}{out_label}{rationale_preview}"
+                    )
+                    continue
+
+            # ── Analyze with AI ────────────────────────
+            ai = analyze(m.get("title", ""), m.get("description", ""))
+
+            p_yes = max(0.01, min(0.99, float(ai.get("p_yes", 0.5))))
+            confidence = max(0.0, min(1.0, float(ai.get("confidence", 0))))
+            rationale = ai.get("rationale", "")
+
+            # For multi-outcome markets, use AI's selected_outcome
+            outcomes = m.get("polymarket_outcomes") or []
+            selected = None
+            if len(outcomes) > 1:
+                selected = ai.get("selected_outcome")
+
+            # For binary markets: if AI thinks NO (p_yes < 0.5),
+            # use (1 - p_yes) as effective confidence for stake
+            effective_conf = confidence
+            is_binary = len(outcomes) <= 1 and selected is None
+            if is_binary and p_yes < 0.5:
+                effective_conf = max(confidence, 1.0 - p_yes)
+
+            stake = calc_stake(effective_conf)
+
+            if stake == 0:
+                print(f"  SKIP {slug} (confidence {confidence:.2f} < {MIN_CONFIDENCE})")
+                continue
+
+            # ── Submit forecast ────────────────────────
+            submit_forecast(slug, p_yes, confidence, stake, rationale, selected)
+            out_label = f" outcome={selected}" if selected else ""
+            print(f"  ✓ {slug}: p={p_yes:.2f} conf={confidence:.2f} stake={stake}{out_label}")
+
+            time.sleep(1.5)  # rate limit
+
+        except Exception as e:
+            print(f"  ✗ {slug}: {e}")
+
+    print("\nDone!")
 
 
-# Example usage
 if __name__ == "__main__":
-    forecast_market(
-        market_slug="btc-100k-march-2026",
-        title="Will Bitcoin reach $100,000 by March 2026?",
-        description="Bitcoin price must touch or exceed $100,000 USD on any major exchange.",
-        category="Crypto",
-        stake=10
-    )
-    
-    print("\n📊 Recent results:")
-    for f in check_results():
-        m = f["market"]
-        s = f.get("score")
-        print(f"  {m['slug']}: p={f['p_yes']:.2f} → {m.get('resolved_outcome', '?')}")
-        if s:
-            print(f"    Brier: {s['brier']:.4f}, PnL: {s['pnl_points']:.1f}")
+    main()

@@ -29,21 +29,60 @@
     },
     {
       "parameters": {
+        "url": "https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1/my-forecasts",
+        "qs": { "status": "open", "limit": "100" },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Agent-Id", "value": "={{ $('Set Credentials').first().json.agent_id }}" },
+            { "name": "X-Api-Key", "value": "={{ $('Set Credentials').first().json.api_key }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Fetch My Forecasts",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [690, 300],
+      "typeVersion": 4.2,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
         "url": "https://sjtxbkmmicwmkqrmyqln.supabase.co/functions/v1/list-markets",
         "qs": { "status": "open", "limit": "100" },
         "options": {}
       },
       "name": "Fetch Markets",
       "type": "n8n-nodes-base.httpRequest",
-      "position": [690, 300],
+      "position": [910, 300],
       "typeVersion": 4.2
     },
     {
       "parameters": { "options": {} },
       "name": "Loop Over Markets",
       "type": "n8n-nodes-base.splitInBatches",
-      "position": [910, 300],
+      "position": [1130, 300],
       "typeVersion": 3
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check if we already voted on this market\nconst market = $input.first().json;\nconst slug = market.slug || '';\nlet forecasts = [];\ntry {\n  const myData = $('Fetch My Forecasts').first().json;\n  forecasts = myData.forecasts || [];\n} catch (e) { /* no existing forecasts */ }\nconst found = forecasts.find(f => f.market_slug === slug);\nreturn [{ json: { ...market, _should_analyze: !found } }];"
+      },
+      "name": "Check Already Voted",
+      "type": "n8n-nodes-base.code",
+      "position": [1350, 300],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $json._should_analyze }}" }]
+        }
+      },
+      "name": "Should Analyze?",
+      "type": "n8n-nodes-base.if",
+      "position": [1570, 300],
+      "typeVersion": 2
     },
     {
       "parameters": {
@@ -63,16 +102,16 @@
       },
       "name": "OpenRouter Analyze",
       "type": "n8n-nodes-base.httpRequest",
-      "position": [1130, 300],
+      "position": [1790, 200],
       "typeVersion": 4.2
     },
     {
       "parameters": {
-        "jsCode": "// Parse OpenRouter response\nconst response = $input.first().json;\nconst ai = JSON.parse(response.choices[0].message.content);\nconst market = $('Loop Over Markets').first().json;\nconst apiKey = $('Set Credentials').first().json.api_key;\n\nconst pYes = Math.max(0.01, Math.min(0.99, ai.p_yes));\nconst confidence = Math.max(0, Math.min(1, ai.confidence));\nconst minConf = 0.55;\nconst maxStake = 20;\nconst stake = confidence < minConf ? 0 : Math.max(1, Math.min(maxStake, Math.round(maxStake * (confidence - 0.5) * 2)));\n\nconst outcomes = market.polymarket_outcomes || [];\nlet selectedOutcome = ai.selected_outcome || null;\nif (outcomes.length <= 1) selectedOutcome = null;\n\nconst payload = {\n  market_slug: market.slug,\n  p_yes: +pYes.toFixed(4),\n  confidence: +confidence.toFixed(4),\n  stake_units: stake,\n  rationale: (ai.rationale || '').slice(0, 2000)\n};\nif (selectedOutcome) payload.selected_outcome = selectedOutcome;\n\nconst body = JSON.stringify(payload);\n\nconst crypto = require('crypto');\nconst signature = crypto.createHmac('sha256', apiKey).update(body).digest('hex');\n\nreturn [{\n  json: {\n    body: payload,\n    bodyString: body,\n    signature,\n    confidence,\n    stake,\n    slug: market.slug\n  }\n}];"
+        "jsCode": "// Parse OpenRouter response & build HMAC-signed payload\nconst response = $input.first().json;\nconst ai = JSON.parse(response.choices[0].message.content);\nconst market = $('Loop Over Markets').first().json;\nconst apiKey = $('Set Credentials').first().json.api_key;\n\nconst pYes = Math.max(0.01, Math.min(0.99, ai.p_yes));\nconst confidence = Math.max(0, Math.min(1, ai.confidence));\nconst minConf = 0.55;\nconst maxStake = 20;\n\nconst outcomes = market.polymarket_outcomes || [];\nlet selectedOutcome = ai.selected_outcome || null;\nif (outcomes.length <= 1) selectedOutcome = null;\n\n// Binary no-strategy: boost confidence when AI says NO\nlet effConf = confidence;\nif (outcomes.length <= 1 && !selectedOutcome && pYes < 0.5) {\n  effConf = Math.max(confidence, 1.0 - pYes);\n}\n\nconst stake = effConf < minConf ? 0 : Math.max(1, Math.min(maxStake, Math.round(maxStake * (effConf - 0.5) * 2)));\n\nconst payload = {\n  market_slug: market.slug,\n  p_yes: +pYes.toFixed(4),\n  confidence: +confidence.toFixed(4),\n  stake_units: stake,\n  rationale: (ai.rationale || '').slice(0, 2000)\n};\nif (selectedOutcome) payload.selected_outcome = selectedOutcome;\n\nconst body = JSON.stringify(payload);\nconst crypto = require('node:crypto');\nconst signature = crypto.createHmac('sha256', apiKey).update(body).digest('hex');\n\nreturn [{ json: { body: payload, bodyString: body, signature, confidence: effConf, stake, slug: market.slug } }];"
       },
       "name": "Build Payload & HMAC",
       "type": "n8n-nodes-base.code",
-      "position": [1350, 300],
+      "position": [2010, 200],
       "typeVersion": 2
     },
     {
@@ -83,7 +122,7 @@
       },
       "name": "Confidence >= 0.55?",
       "type": "n8n-nodes-base.if",
-      "position": [1570, 300],
+      "position": [2230, 200],
       "typeVersion": 2
     },
     {
@@ -100,22 +139,31 @@
           ]
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [{ "name": "jsonBody", "value": "={{ $json.bodyString }}" }]
-        },
+        "specifyBody": "string",
+        "body": "={{ $json.bodyString }}",
+        "contentType": "raw",
+        "rawContentType": "application/json",
         "options": {}
       },
       "name": "Submit Forecast",
       "type": "n8n-nodes-base.httpRequest",
-      "position": [1790, 200],
+      "position": [2450, 100],
       "typeVersion": 4.2
     }
   ],
   "connections": {
     "Schedule Trigger": { "main": [[{ "node": "Set Credentials", "type": "main", "index": 0 }]] },
-    "Set Credentials": { "main": [[{ "node": "Fetch Markets", "type": "main", "index": 0 }]] },
+    "Set Credentials": { "main": [[{ "node": "Fetch My Forecasts", "type": "main", "index": 0 }]] },
+    "Fetch My Forecasts": { "main": [[{ "node": "Fetch Markets", "type": "main", "index": 0 }]] },
     "Fetch Markets": { "main": [[{ "node": "Loop Over Markets", "type": "main", "index": 0 }]] },
-    "Loop Over Markets": { "main": [[], [{ "node": "OpenRouter Analyze", "type": "main", "index": 0 }]] },
+    "Loop Over Markets": { "main": [[], [{ "node": "Check Already Voted", "type": "main", "index": 0 }]] },
+    "Check Already Voted": { "main": [[{ "node": "Should Analyze?", "type": "main", "index": 0 }]] },
+    "Should Analyze?": {
+      "main": [
+        [{ "node": "OpenRouter Analyze", "type": "main", "index": 0 }],
+        [{ "node": "Loop Over Markets", "type": "main", "index": 0 }]
+      ]
+    },
     "OpenRouter Analyze": { "main": [[{ "node": "Build Payload & HMAC", "type": "main", "index": 0 }]] },
     "Build Payload & HMAC": { "main": [[{ "node": "Confidence >= 0.55?", "type": "main", "index": 0 }]] },
     "Confidence >= 0.55?": {
