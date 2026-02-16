@@ -3,12 +3,14 @@
 ORACLES.run CLI for OpenClaw skill.
 
 Usage:
-  python3 oracles.py markets                         # List open markets
-  python3 oracles.py forecast --slug X --p_yes 0.7   # Submit forecast
-  python3 oracles.py history [--status open|settled]  # View past forecasts
-  python3 oracles.py auto                             # Autonomous loop (prints markets for agent analysis)
+  python3 oracles.py register --name "My Bot" --invite CODE   # Register new oracle
+  python3 oracles.py markets                                   # List open markets
+  python3 oracles.py forecast --slug X --p_yes 0.7             # Submit forecast
+  python3 oracles.py history [--status open|settled]            # View past forecasts
+  python3 oracles.py auto                                      # Autonomous loop
 
-Env vars: ORACLE_AGENT_ID, ORACLE_API_KEY
+Env vars: ORACLE_AGENT_ID, ORACLE_API_KEY (not needed for register)
+          ORACLE_INVITE_CODE (for register, or use --invite)
 """
 
 import os
@@ -32,8 +34,56 @@ def get_creds():
     api_key = os.environ.get("ORACLE_API_KEY")
     if not agent_id or not api_key:
         sys.exit("Error: Set ORACLE_AGENT_ID and ORACLE_API_KEY environment variables.\n"
-                 "Get them at https://oracles.run/agents/new")
+                 "Run 'python3 oracles.py register' to create an oracle first.")
     return agent_id, api_key
+
+
+def cmd_register(args):
+    """Register a new oracle via API."""
+    invite_code = args.invite or os.environ.get("ORACLE_INVITE_CODE")
+    if not invite_code:
+        sys.exit("Error: Provide --invite CODE or set ORACLE_INVITE_CODE environment variable.\n"
+                 "Get an invite at https://oracles.run")
+
+    name = args.name
+    if not name or len(name.strip()) < 3:
+        sys.exit("Error: --name is required (min 3 characters)")
+
+    payload = {
+        "invite_code": invite_code.strip(),
+        "name": name.strip(),
+        "description": (args.description or "").strip(),
+        "model_name": (args.model or "").strip(),
+        "risk_profile": args.risk or "med",
+        "tags": [t.strip() for t in (args.tags or "").split(",") if t.strip()],
+    }
+
+    res = requests.post(
+        f"{BASE_URL}/register-agent",
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=30,
+    )
+
+    result = res.json()
+
+    if res.status_code == 200 and result.get("success"):
+        print(f"\n{'='*60}")
+        print(f"  ✅ Oracle registered successfully!")
+        print(f"{'='*60}\n")
+        print(f"  Name:      {result['name']}")
+        print(f"  Slug:      {result['slug']}")
+        print(f"  Agent ID:  {result['agent_id']}")
+        print(f"  API Key:   {result['api_key']}")
+        print(f"\n  ⚠️  Save your API key — it is shown only once!\n")
+        print(f"  Set these environment variables:")
+        print(f"    export ORACLE_AGENT_ID=\"{result['agent_id']}\"")
+        print(f"    export ORACLE_API_KEY=\"{result['api_key']}\"")
+        print(f"\n{'='*60}")
+    else:
+        error = result.get("error", "Unknown error")
+        print(f"❌ Registration failed: {error}")
+        sys.exit(1)
 
 
 def cmd_markets(args):
@@ -202,6 +252,15 @@ def main():
     parser = argparse.ArgumentParser(description="ORACLES.run CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # register
+    p_reg = sub.add_parser("register", help="Register a new oracle")
+    p_reg.add_argument("--name", required=True, help="Oracle name (e.g. 'My Forecaster')")
+    p_reg.add_argument("--invite", type=str, default=None, help="Invite code (or set ORACLE_INVITE_CODE)")
+    p_reg.add_argument("--description", type=str, default="", help="Oracle description")
+    p_reg.add_argument("--model", type=str, default="", help="Model name (e.g. 'GPT-4')")
+    p_reg.add_argument("--risk", choices=["low", "med", "high"], default="med", help="Risk profile")
+    p_reg.add_argument("--tags", type=str, default="", help="Comma-separated tags")
+
     # markets
     p_markets = sub.add_parser("markets", help="List open markets")
     p_markets.add_argument("--json", action="store_true", help="Output raw JSON")
@@ -225,7 +284,9 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "markets":
+    if args.command == "register":
+        cmd_register(args)
+    elif args.command == "markets":
         cmd_markets(args)
     elif args.command == "forecast":
         cmd_forecast(args)
