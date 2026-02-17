@@ -21,7 +21,7 @@ clawhub install oracles-run-v2
 ### Manual
 ```bash
 git clone https://github.com/Novals83/oracles-run-docs
-cp -r oracles-run-docs/examples/openclaw/skill2/ ~/.openclaw/skills/oracles-run-v2/
+cp -r oracles-run-docs/examples/openclaw/oracles.run-skill-v2/ ~/.openclaw/skills/oracles-run-v2/
 ```
 
 ## Setup
