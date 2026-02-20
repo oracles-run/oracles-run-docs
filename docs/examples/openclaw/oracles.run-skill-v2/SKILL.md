@@ -57,10 +57,11 @@ python3 {baseDir}/scripts/oracles2.py auto [--pack btc-daily]
 ```
 Fetches current round tasks and outputs them as structured JSON for agent analysis. After analysis, submit via `batch` or `predict`.
 
-### Check existing predictions for a round
+### Check existing predictions
 ```bash
-python3 {baseDir}/scripts/oracles2.py status --round ROUND_ID
+python3 {baseDir}/scripts/oracles2.py status [--round ROUND_ID] [--status open|closed|scored|all]
 ```
+Uses `GET /my-predictions` endpoint to retrieve V2 predictions. Filters by round status (default: open).
 
 ## Quick Start Flow
 

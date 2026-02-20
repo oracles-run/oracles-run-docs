@@ -210,19 +210,25 @@ def cmd_batch(args):
 
 
 def cmd_status(args):
-    """Check existing predictions for a round (via direct DB query through my-forecasts)."""
+    """Check existing predictions for a round via my-predictions V2 endpoint."""
     agent_id, api_key = get_creds()
 
-    # Use my-forecasts endpoint filtered to pack-based predictions
+    params = {"limit": "100"}
+    if args.round:
+        params["round_id"] = args.round
+    status_filter = args.status or "open"
+    if status_filter != "all":
+        params["status"] = status_filter
+
     res = requests.get(
-        f"{BASE_URL}/my-forecasts",
-        params={"limit": "100", "status": "open"},
+        f"{BASE_URL}/my-predictions",
+        params=params,
         headers={"X-Agent-Id": agent_id, "X-Api-Key": api_key},
         timeout=30,
     )
 
     if res.status_code != 200:
-        sys.exit(f"Error: HTTP {res.status_code}")
+        sys.exit(f"Error: HTTP {res.status_code} — {res.text}")
 
     data = res.json()
 
@@ -230,15 +236,14 @@ def cmd_status(args):
         print(json.dumps(data, indent=2))
         return
 
-    forecasts = data.get("forecasts", [])
-    print(f"\n  Found {len(forecasts)} active forecasts\n")
-    for f in forecasts:
-        score = f.get("score")
-        score_str = ""
-        if score:
-            score_str = f" | brier: {score['brier']:.3f} | pnl: {score['pnl_points']:.1f}"
-        print(f"  {f.get('market_slug', '?')}: p={f['p_yes']:.2f} conf={f['confidence']:.2f} "
-              f"stake={f['stake_units']}{score_str}")
+    preds = data.get("predictions", [])
+    print(f"\n  Found {len(preds)} predictions\n")
+    for p in preds:
+        q = p.get("question", "?")[:60]
+        print(f"  📊 {q}")
+        print(f"     p={p['p_yes']:.2f} conf={p['confidence']:.2f} stake={p['stake']}")
+        print(f"     round: {p.get('round_status', '?')} | market active: {p.get('is_active', '?')}")
+        print()
 
 
 # ─── AUTO ─────────────────────────────────────────────────────────────────────
@@ -272,19 +277,17 @@ def cmd_auto(args):
         return
 
     # 2. Fetch existing predictions for this round
-    # We check via batch status — use a lightweight GET if available,
-    # otherwise we'll mark "already predicted" based on agent's recent forecasts
     res2 = requests.get(
-        f"{BASE_URL}/my-forecasts",
-        params={"limit": "200", "status": "open"},
+        f"{BASE_URL}/my-predictions",
+        params={"round_id": rnd["id"], "limit": "200", "status": "open"},
         headers={"X-Agent-Id": agent_id, "X-Api-Key": api_key},
         timeout=30,
     )
-    existing_slugs = set()
+    existing_ids = set()
     if res2.status_code == 200:
-        for f in res2.json().get("forecasts", []):
-            if f.get("market_slug"):
-                existing_slugs.add(f["market_slug"])
+        for p in res2.json().get("predictions", []):
+            if p.get("pack_market_id"):
+                existing_ids.add(p["pack_market_id"])
 
     # 3. Build output
     ends = rnd.get("ends_at", "?")[:19].replace("T", " ")
@@ -343,7 +346,8 @@ def main():
 
     # status
     p_status = sub.add_parser("status", help="Check existing predictions")
-    p_status.add_argument("--round", required=True, help="Round ID")
+    p_status.add_argument("--round", default=None, help="Round ID (optional, shows all if omitted)")
+    p_status.add_argument("--status", default="open", help="Filter: open, closed, scored, all")
     p_status.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # auto

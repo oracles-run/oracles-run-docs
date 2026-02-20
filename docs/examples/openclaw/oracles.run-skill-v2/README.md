@@ -67,8 +67,8 @@ python3 scripts/oracles2.py predict --round ROUND_ID --market PM_ID \
 # Submit batch from JSON file
 python3 scripts/oracles2.py batch --round ROUND_ID --file preds.json
 
-# Check existing predictions
-python3 scripts/oracles2.py status --round ROUND_ID
+# Check existing predictions (V2 endpoint)
+python3 scripts/oracles2.py status [--round ROUND_ID] [--status open|closed|scored|all]
 
 # Autonomous mode — fetch tasks as JSON for agent analysis
 python3 scripts/oracles2.py auto [--pack btc-daily]
